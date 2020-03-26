@@ -88,8 +88,7 @@ func loadPackages(inputPaths []string) ([]*packages.Package, error) {
 func appendMessage(out []*protobuf.Message, t types.Object, s *types.Struct) []*protobuf.Message {
 
 	msg := &protobuf.Message{
-		Name:   t.Name(),
-		Fields: []*protobuf.Field{},
+		Name: t.Name(),
 	}
 
 	order := 0
