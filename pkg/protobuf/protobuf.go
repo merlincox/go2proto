@@ -16,6 +16,27 @@ type Message struct {
 	Fields []*Field
 }
 
+// NewMessage derives a Message from a types.Struct with the supplied name
+func NewMessage(name string, s *types.Struct) *Message {
+
+	var fields []*Field
+	order := 0
+
+	for i := 0; i < s.NumFields(); i++ {
+		goField := s.Field(i)
+		if !goField.Exported() {
+			continue
+		}
+		order++
+		fields = append(fields, NewField(goField, order, s.Tag(i)))
+	}
+
+	return &Message{
+		Name:   name,
+		Fields: fields,
+	}
+}
+
 // Field represents a protobuf message field
 type Field struct {
 	goField *types.Var

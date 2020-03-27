@@ -39,7 +39,7 @@ func GetMessages(inputPaths []string, filter string) ([]*protobuf.Message, error
 			if s, ok := t.Type().Underlying().(*types.Struct); ok {
 				seen[t.Name()] = struct{}{}
 				if filter == "" || strings.Contains(t.Name(), filter) {
-					msgs = appendMessage(msgs, t, s)
+					msgs = append(msgs, protobuf.NewMessage(t.Name(), s))
 				}
 			}
 		}
@@ -83,23 +83,4 @@ func loadPackages(inputPaths []string) ([]*packages.Package, error) {
 		return nil, errors.New(strings.Join(errs, "; "))
 	}
 	return packages, nil
-}
-
-func appendMessage(out []*protobuf.Message, t types.Object, s *types.Struct) []*protobuf.Message {
-
-	msg := &protobuf.Message{
-		Name: t.Name(),
-	}
-
-	order := 0
-	for i := 0; i < s.NumFields(); i++ {
-		goField := s.Field(i)
-		if !goField.Exported() {
-			continue
-		}
-		order++
-		msg.Fields = append(msg.Fields, protobuf.NewField(goField, order, s.Tag(i)))
-	}
-	out = append(out, msg)
-	return out
 }
