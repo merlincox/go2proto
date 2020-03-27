@@ -7,11 +7,11 @@ This code is forked from [anjmao/go2proto](https://github.com/anjmao/go2proto) a
 ### Syntax
 ```
   -f string
-        Protobuf output directory path. (default ".")
-  -filter string
-        Filter by struct names. Case insensitive.
-  -p value
-        Comma-separated paths of packages to analyse. Relative paths ("./example/in") are allowed.
+        Filter by struct names.
+  -o string
+        Protobuf output file path. The output directory must exist. (default "./output.proto")
+  -p string
+        Comma-separated paths of packages to analyse for structs. Relative paths ("./example/in") are allowed.
   -t    Add import tagger/tagger.proto and write tag extensions if any of the structs are tagged.
 ```
 
