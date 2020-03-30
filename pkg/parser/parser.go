@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"go/token"
-	"go/types"
 	"os"
 	"sort"
 	"strings"
@@ -14,7 +13,7 @@ import (
 	"github.com/merlincox/go2proto/pkg/protobuf"
 )
 
-// GetMessages returns a sorted slice of protobuf message representations for the input paths and filter, or an error
+// GetMessages returns a filtered and sorted slice of protobuf message representations for the input paths and filter, or an error
 func GetMessages(inputPaths []string, filter string) ([]*protobuf.Message, error) {
 
 	pkgs, err := loadPackages(inputPaths)
@@ -24,27 +23,15 @@ func GetMessages(inputPaths []string, filter string) ([]*protobuf.Message, error
 	}
 
 	var msgs []*protobuf.Message
-	seen := map[string]struct{}{}
-	for _, p := range pkgs {
-		for _, t := range p.TypesInfo.Defs {
-			if t == nil {
-				continue
-			}
-			if !t.Exported() {
-				continue
-			}
-			if _, ok := seen[t.Name()]; ok {
-				continue
-			}
-			if s, ok := t.Type().Underlying().(*types.Struct); ok {
-				seen[t.Name()] = struct{}{}
-				if filter == "" || strings.Contains(t.Name(), filter) {
-					msgs = append(msgs, protobuf.NewMessage(t.Name(), s))
-				}
-			}
+
+	for _, msg := range protobuf.NewMessageMap(pkgs).Messages() {
+		if filter == "" || strings.Contains(msg.TypeName, filter) {
+			msgs = append(msgs, msg)
 		}
 	}
-	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Name < msgs[j].Name })
+
+	sort.Slice(msgs, func(i, j int) bool { return msgs[i].TypeName < msgs[j].TypeName })
+
 	return msgs, nil
 }
 
