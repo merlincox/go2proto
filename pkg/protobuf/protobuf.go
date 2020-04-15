@@ -8,33 +8,44 @@ import (
 	"text/template"
 	"unicode"
 	"unicode/utf8"
-
-	"golang.org/x/tools/go/packages"
 )
 
-func anonymous(object types.Object) bool {
+// isAnonymous returns true if the object type was declared anonymously
+func isAnonymous(object types.Object) bool {
 	return strings.Contains(object.Type().String(), "struct{")
 }
 
-func baseName(object types.Object) string {
-	return strings.TrimPrefix(strings.TrimLeft(object.Type().String(), "[]*"), object.Pkg().Path()+".")
+// baseTypeName returns the name of an object type shorn of package, pointer and slice prefixes
+func baseTypeName(object types.Object) string {
+	typeName := object.Type().String()
+	if mapObject, ok := object.Type().(*types.Map); ok {
+		typeName = mapObject.Elem().String()
+	}
+	return dePrefix(typeName, object)
 }
 
+func dePrefix(typeName string, object types.Object) string {
+	return strings.TrimPrefix(strings.TrimLeft(typeName, "[]*"), object.Pkg().Path()+".")
+}
+
+// toStruct given a type object, return the underlying struct type it is based upon or nil.
 func toStruct(object types.Object) *types.Struct {
 	return recurseToStruct(object.Type().Underlying())
 }
 
 func recurseToStruct(objectType types.Type) *types.Struct {
 
-	switch underlying := objectType.(type) {
+	switch specificType := objectType.(type) {
 	case *types.Struct:
-		return underlying
+		return specificType
 	case *types.Pointer:
-		return recurseToStruct(underlying.Elem())
+		return recurseToStruct(specificType.Elem())
 	case *types.Slice:
-		return recurseToStruct(underlying.Elem())
+		return recurseToStruct(specificType.Elem())
+	case *types.Map:
+		return recurseToStruct(specificType.Elem())
 	case *types.Named:
-		return recurseToStruct(underlying.Underlying())
+		return recurseToStruct(specificType.Underlying())
 	default:
 		return nil
 	}
@@ -43,20 +54,20 @@ func recurseToStruct(objectType types.Type) *types.Struct {
 // MessageMap stores a collection of Messages with type mapping to resolve relationships
 type MessageMap map[string]*Message
 
-// NewMessageMap creates a MessageMap from a slice of packages
-func NewMessageMap(pkgs []*packages.Package) MessageMap {
+// NewMessageMap creates a MessageMap from a slice of types.Infos
+func NewMessageMap(infos []*types.Info) MessageMap {
 
 	msgMap := make(map[string]*Message)
 
-	for _, pkg := range pkgs {
-		for _, object := range pkg.TypesInfo.Defs {
+	for _, info := range infos {
+		for _, object := range info.Defs {
 			if object == nil {
 				continue
 			}
 			if !object.Exported() {
 				continue
 			}
-			if _, already := msgMap[baseName(object)]; !already {
+			if _, already := msgMap[baseTypeName(object)]; !already {
 				msg := NewMessage(object)
 				if msg != nil {
 					msgMap[msg.TypeName] = msg
@@ -109,8 +120,8 @@ func (m *Message) linkToParent(msgMap MessageMap) {
 	for i := range m.Fields {
 		// in reverse order so that earlier field names are used for anonymous types
 		f := m.Fields[len(m.Fields)-1-i]
-		if f.anonymous {
-			msg, ok := msgMap[f.nativeType]
+		if f.isAnonymous {
+			msg, ok := msgMap[f.nativeTypeName]
 			if ok {
 				msg.parent = m
 				msg.parentalFieldName = f.nativeFieldName
@@ -120,7 +131,7 @@ func (m *Message) linkToParent(msgMap MessageMap) {
 }
 
 // resolveTypeName recursively resets the type name of anonymously defined messages to the name of the parent in which
-// they were defined underscore-appended with the field name under which they were defined
+// they were declared underscore-appended with the field name under which they were defined
 func (m *Message) resolveTypeName(msgMap MessageMap) {
 
 	if m.parent != nil {
@@ -129,13 +140,13 @@ func (m *Message) resolveTypeName(msgMap MessageMap) {
 	}
 }
 
-// resolveFieldTypes sets the type names of anonymous fields to the name of their message type
+// resolveFieldTypes sets the type names of isAnonymous fields to the name of their message type
 func (m *Message) resolveFieldTypes(msgMap MessageMap) {
 
 	for i := range m.Fields {
 		f := m.Fields[i]
-		if f.anonymous {
-			msg, ok := msgMap[f.nativeType]
+		if f.isAnonymous {
+			msg, ok := msgMap[f.nativeTypeName]
 			if ok {
 				f.TypeName = msg.TypeName
 			}
@@ -143,8 +154,8 @@ func (m *Message) resolveFieldTypes(msgMap MessageMap) {
 	}
 }
 
-// NewMessage attempts to generate a Message from a types.Object
-// If the object passed does not have an underlying struct type it will return nil
+// NewMessage attempts to generate a Message from a types.Object.
+// If the object passed does not have an underlying struct type NewMessage will return nil.
 func NewMessage(object types.Object) *Message {
 
 	strct := toStruct(object)
@@ -154,7 +165,7 @@ func NewMessage(object types.Object) *Message {
 	}
 
 	msg := Message{
-		TypeName: baseName(object),
+		TypeName: baseTypeName(object),
 	}
 
 	order := 0
@@ -172,13 +183,15 @@ func NewMessage(object types.Object) *Message {
 
 // Field represents a protobuf message field
 type Field struct {
-	nativeType      string
+	nativeTypeName  string
 	nativeFieldName string
-	anonymous       bool
+	isAnonymous     bool
 
 	TypeName   string
 	FieldName  string
 	IsRepeated bool
+	IsMap      bool
+	MapKey     string
 	Order      int
 	Tags       string
 }
@@ -188,29 +201,57 @@ func NewField(object types.Object, order int, tags string) *Field {
 
 	_, isRepeated := object.Type().Underlying().(*types.Slice)
 
+	mp, isAMap := object.Type().Underlying().(*types.Map)
+
 	fieldName := object.Name()
 
 	r, n := utf8.DecodeRuneInString(fieldName)
 	fieldName = string(unicode.ToLower(r)) + fieldName[n:]
 
-	return &Field{
+	field := Field{
 
-		nativeType:      baseName(object),
 		nativeFieldName: object.Name(),
-		anonymous:       anonymous(object),
+		isAnonymous:     isAnonymous(object),
 
 		FieldName:  fieldName,
-		TypeName:   protobufType(baseName(object)),
 		IsRepeated: isRepeated,
+		IsMap:      isAMap,
 		Order:      order,
 		Tags:       tags,
+	}
+
+	if isAMap {
+		field.MapKey = protobufType(mp.Key().String())
+		field.TypeName = dePrefix(mp.Elem().String(), object)
+		field.nativeTypeName = field.TypeName
+	} else {
+		field.TypeName = protobufType(baseTypeName(object))
+		field.nativeTypeName = baseTypeName(object)
+	}
+
+	return &field
+}
+
+func protobufType(goType string) string {
+	switch goType {
+	case "int":
+		return "int64"
+	case "float32":
+		return "float"
+	case "float64":
+		return "double"
+	case "interface{}":
+		return "google.protobuf.Any"
+	default:
+		return goType
 	}
 }
 
 // WriteOutput writes out a slice of protobuf message representations in protobuf 3 file format
 func WriteOutput(out io.Writer, msgs []*Message, useTags bool) error {
 
-	protobufTemplate := `{{- define "field" }}{{.TypeName}} {{.FieldName}} = {{.Order}}{{if writeTags . }} [(tagger.tags) = "{{escapeQuotes .Tags}}"]{{ end }};{{ end -}}
+	protobufTemplate := `{{- define "fieldType" }}{{ if .IsMap }}map<{{ .MapKey }}, {{ .TypeName }}>{{ else }}{{ .TypeName }}{{ end }}{{ end -}}
+{{- define "field" }}{{ template "fieldType" .}} {{ .FieldName }} = {{.Order}}{{if writeTags . }} [(tagger.tags) = "{{escapeQuotes .Tags}}"]{{ end }};{{ end -}}
 syntax = "proto3";
 
 package proto;
@@ -262,23 +303,8 @@ message {{.TypeName}} {
 
 	tmpl, err := template.New("protobuf").Funcs(customFuncMap).Parse(protobufTemplate)
 	if err != nil {
-		return fmt.Errorf("unable to parse template: %s", err)
+		return fmt.Errorf("Unable to parse template: %s", err)
 	}
 
 	return tmpl.Execute(out, msgs)
-}
-
-func protobufType(goType string) string {
-	switch goType {
-	case "int":
-		return "int64"
-	case "float32":
-		return "float"
-	case "float64":
-		return "double"
-	case "interface{}":
-		return "google.protobuf.Any"
-	default:
-		return goType
-	}
 }
