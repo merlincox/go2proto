@@ -8,39 +8,44 @@ import (
 	"text/template"
 	"unicode"
 	"unicode/utf8"
-
-	"golang.org/x/tools/go/packages"
 )
 
+// isAnonymous returns true if the object type was declared anonymously
 func isAnonymous(object types.Object) bool {
 	return strings.Contains(object.Type().String(), "struct{")
 }
 
-func baseName(object types.Object) string {
+// baseTypeName returns the name of an object type shorn of package, pointer and slice prefixes
+func baseTypeName(object types.Object) string {
 	typeName := object.Type().String()
 	if mapObject, ok := object.Type().(*types.Map); ok {
 		typeName = mapObject.Elem().String()
 	}
+	return dePrefix(typeName, object)
+}
+
+func dePrefix(typeName string, object types.Object) string {
 	return strings.TrimPrefix(strings.TrimLeft(typeName, "[]*"), object.Pkg().Path()+".")
 }
 
+// toStruct given a type object, return the underlying struct type it is based upon or nil.
 func toStruct(object types.Object) *types.Struct {
 	return recurseToStruct(object.Type().Underlying())
 }
 
 func recurseToStruct(objectType types.Type) *types.Struct {
 
-	switch underlying := objectType.(type) {
+	switch specificType := objectType.(type) {
 	case *types.Struct:
-		return underlying
+		return specificType
 	case *types.Pointer:
-		return recurseToStruct(underlying.Elem())
+		return recurseToStruct(specificType.Elem())
 	case *types.Slice:
-		return recurseToStruct(underlying.Elem())
+		return recurseToStruct(specificType.Elem())
 	case *types.Map:
-		return recurseToStruct(underlying.Elem())
+		return recurseToStruct(specificType.Elem())
 	case *types.Named:
-		return recurseToStruct(underlying.Underlying())
+		return recurseToStruct(specificType.Underlying())
 	default:
 		return nil
 	}
@@ -49,20 +54,20 @@ func recurseToStruct(objectType types.Type) *types.Struct {
 // MessageMap stores a collection of Messages with type mapping to resolve relationships
 type MessageMap map[string]*Message
 
-// NewMessageMap creates a MessageMap from a slice of packages
-func NewMessageMap(pkgs []*packages.Package) MessageMap {
+// NewMessageMap creates a MessageMap from a slice of types.Infos
+func NewMessageMap(infos []*types.Info) MessageMap {
 
 	msgMap := make(map[string]*Message)
 
-	for _, pkg := range pkgs {
-		for _, object := range pkg.TypesInfo.Defs {
+	for _, info := range infos {
+		for _, object := range info.Defs {
 			if object == nil {
 				continue
 			}
 			if !object.Exported() {
 				continue
 			}
-			if _, already := msgMap[baseName(object)]; !already {
+			if _, already := msgMap[baseTypeName(object)]; !already {
 				msg := NewMessage(object)
 				if msg != nil {
 					msgMap[msg.TypeName] = msg
@@ -160,7 +165,7 @@ func NewMessage(object types.Object) *Message {
 	}
 
 	msg := Message{
-		TypeName: baseName(object),
+		TypeName: baseTypeName(object),
 	}
 
 	order := 0
@@ -196,7 +201,7 @@ func NewField(object types.Object, order int, tags string) *Field {
 
 	_, isRepeated := object.Type().Underlying().(*types.Slice)
 
-	mp, isMap := object.Type().Underlying().(*types.Map)
+	mp, isAMap := object.Type().Underlying().(*types.Map)
 
 	fieldName := object.Name()
 
@@ -210,21 +215,36 @@ func NewField(object types.Object, order int, tags string) *Field {
 
 		FieldName:  fieldName,
 		IsRepeated: isRepeated,
-		IsMap:      isMap,
+		IsMap:      isAMap,
 		Order:      order,
 		Tags:       tags,
 	}
 
-	if isMap {
+	if isAMap {
 		field.MapKey = protobufType(mp.Key().String())
-		field.TypeName = strings.TrimPrefix(strings.TrimLeft(mp.Elem().String(), "[]*"), object.Pkg().Path()+".")
+		field.TypeName = dePrefix(mp.Elem().String(), object)
 		field.nativeTypeName = field.TypeName
 	} else {
-		field.TypeName = protobufType(baseName(object))
-		field.nativeTypeName = baseName(object)
+		field.TypeName = protobufType(baseTypeName(object))
+		field.nativeTypeName = baseTypeName(object)
 	}
 
 	return &field
+}
+
+func protobufType(goType string) string {
+	switch goType {
+	case "int":
+		return "int64"
+	case "float32":
+		return "float"
+	case "float64":
+		return "double"
+	case "interface{}":
+		return "google.protobuf.Any"
+	default:
+		return goType
+	}
 }
 
 // WriteOutput writes out a slice of protobuf message representations in protobuf 3 file format
@@ -283,23 +303,8 @@ message {{.TypeName}} {
 
 	tmpl, err := template.New("protobuf").Funcs(customFuncMap).Parse(protobufTemplate)
 	if err != nil {
-		return fmt.Errorf("unable to parse template: %s", err)
+		return fmt.Errorf("Unable to parse template: %s", err)
 	}
 
 	return tmpl.Execute(out, msgs)
-}
-
-func protobufType(goType string) string {
-	switch goType {
-	case "int":
-		return "int64"
-	case "float32":
-		return "float"
-	case "float64":
-		return "double"
-	case "interface{}":
-		return "google.protobuf.Any"
-	default:
-		return goType
-	}
 }

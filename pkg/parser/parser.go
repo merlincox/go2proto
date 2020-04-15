@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"go/token"
+	"go/types"
 	"os"
 	"sort"
 	"strings"
@@ -16,7 +17,7 @@ import (
 // GetMessages returns a filtered and sorted slice of protobuf message representations for the input paths and filter, or an error
 func GetMessages(inputPaths []string, filter string) ([]*protobuf.Message, error) {
 
-	pkgs, err := loadPackages(inputPaths)
+	infos, err := getTypesInfo(inputPaths)
 
 	if err != nil {
 		return nil, err
@@ -24,7 +25,7 @@ func GetMessages(inputPaths []string, filter string) ([]*protobuf.Message, error
 
 	var msgs []*protobuf.Message
 
-	for _, msg := range protobuf.NewMessageMap(pkgs).Messages() {
+	for _, msg := range protobuf.NewMessageMap(infos).Messages() {
 		if filter == "" || strings.Contains(msg.TypeName, filter) {
 			msgs = append(msgs, msg)
 		}
@@ -35,8 +36,8 @@ func GetMessages(inputPaths []string, filter string) ([]*protobuf.Message, error
 	return msgs, nil
 }
 
-// attempt to load all packages
-func loadPackages(inputPaths []string) ([]*packages.Package, error) {
+// attempt to get type information from all packages
+func getTypesInfo(inputPaths []string) ([]*types.Info, error) {
 
 	pwd, err := os.Getwd()
 	if err != nil {
@@ -69,5 +70,11 @@ func loadPackages(inputPaths []string) ([]*packages.Package, error) {
 	if len(errs) != 0 {
 		return nil, errors.New(strings.Join(errs, "; "))
 	}
-	return packages, nil
+
+	var infos []*types.Info
+	for _, pkg := range packages {
+		infos = append(infos, pkg.TypesInfo)
+	}
+
+	return infos, nil
 }
